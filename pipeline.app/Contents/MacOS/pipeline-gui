@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+
+from Tkinter import *
+from tkFileDialog import *
+from subprocess import Popen, PIPE
+from threading import Thread
+from Queue import Queue, Empty
+import psutil
+import fcntl
+import sys
+import os
+import re
+
+
+apss_pipeline='pipeline.py'
+code_subpath='pipeline.app/Contents/MacOS/pipeline-gui'
+code_subroot=os.path.dirname(code_subpath)
+code_root=os.path.realpath(__file__).replace(code_subpath,'')
+main_pipeline=os.path.join(code_root, apss_pipeline)
+source_parameters=os.path.join(code_root, 'parameters.py')
+
+os.environ['PYTHONUNBUFFERED']='TRUE'
+os.environ['PYTHONPATH']='$PYTHONPATH:' + code_root
+
+io_queue = Queue()
+
+
+
+#main_pipeline=os.path.join(code_root, 'main.py')
+
+def get_parameter_from_file(par, src_file):
+    fromfile=open(src_file, 'r')
+    reg_var="%s.*" % par
+    line=re.search(reg_var, fromfile.read())
+    fromfile.close()
+    reg_val='%s.=.|\'' % par
+    val=re.compile(reg_val)
+    l=line.group()
+    return val.sub('', line.group())
+
+#main_data_dir=get_parameter_from_file('main_data_directory',source_parameters)
+master=""
+slave=""
+
+
+def select_source_dir():
+    my_data_dir = os.path.abspath(askdirectory())
+    if my_data_dir != '':
+        main_data_directory = my_data_dir
+        e1.delete(0,END)
+        e1.insert(0,my_data_dir)
+        e1.update()
+    
+
+def kill_proc_tree(pid, including_parent=False):    
+    parent = psutil.Process(pid)
+    for child in parent.children(recursive=True):
+        child.kill()
+    if including_parent:
+        parent.kill()
+   
+def cmd_quit(root):
+    pid = os.getpid()
+    kill_proc_tree(pid)
+    root.quit()
+
+def stream_watcher(identifier, stream):
+    for line in iter(stream.readline, b''):
+        io_queue.put(line)
+    stream.close()
+
+def read_log(root, proc, text):
+    try:
+        line = io_queue.get(True, 1)
+    except Empty:
+        if proc.poll() is not None:
+            return
+    else:
+        if text.get("end-5c", "end-2c") == "...":
+            text.delete("end-1c", "end")
+        text.insert(END,line)
+        text.update()
+        text.see(END)
+    root.after(1000, lambda:read_log(root, proc, text))
+
+def run_pipeline(main_data_dir):
+    slave=Tk()
+    slave.title("APSS Pipeline :: LOG")
+    f3 = Frame(slave)
+    f3.pack(fill=BOTH)
+    s1 = Scrollbar(f3)
+    s1.pack(side='right',fill='y')
+    t1=Text(f3, height=18, width=80, yscrollcommand=s1.set)
+    t1.pack()
+    b4=Button(slave, text='Quit', command=lambda:cmd_quit(slave))
+    b4.pack()
+    slave.attributes('-topmost', 1)
+    slave.attributes('-topmost', 0)
+    slave.update()
+    master.destroy()
+    proc=Popen([main_pipeline, main_data_dir], bufsize=0, shell=False, stdout=PIPE, stderr=PIPE)
+    Thread(target=stream_watcher, name='stdout-watcher',
+           args=('STDOUT', proc.stdout)).start()
+    Thread(target=stream_watcher, name='stderr-watcher',
+           args=('STDERR', proc.stderr)).start()
+    read_log(slave, proc, t1)
+
+
+if __name__ == "__main__":
+
+   master = Tk()
+   master.title("APSS Pipeline")
+   
+   f0 = Frame(master)
+   f0.pack(anchor=W)
+   
+   l0 = Label(f0, anchor=W, text='Choose the directory of data:')
+   l0.pack(side=LEFT, padx=5, pady=5, anchor=W)
+   
+   f1 = Frame(master)
+   f1.pack(fill=X)
+   
+   e1 = Entry(f1, width=50)
+   e1.pack(side=LEFT, padx=5, pady=5, fill=X)
+   e1.delete(0,END)
+   e1.insert(0,get_parameter_from_file('main_data_directory',source_parameters))
+   
+   b1=Button(f1, width=10, text='Browse', command=lambda:select_source_dir())
+   b1.pack(side=LEFT, padx=5, pady=5, anchor=E)
+   
+   f2 = Frame(master)
+   f2.pack(pady=10, anchor=E)
+   
+   b2=Button(f2, width=10, text='Run', command=lambda:run_pipeline(e1.get()))
+   b2.pack(side=RIGHT, padx=5)
+   
+   b3=Button(f2, width=10, text='Cancel', command=master.quit)
+   b3.pack(side=RIGHT, padx=5)
+   
+   master.attributes('-topmost', 1)
+   master.update()
+   master.attributes('-topmost', 0)
+   
+   mainloop()
